@@ -15,6 +15,7 @@ mod switch;
 mod task;
 
 use crate::config::MAX_APP_NUM;
+use crate::config::MAX_SYSCALL_NUM;
 use crate::loader::{get_num_app, init_app_cx};
 use crate::sync::UPSafeCell;
 use lazy_static::*;
@@ -54,6 +55,7 @@ lazy_static! {
         let mut tasks = [TaskControlBlock {
             task_cx: TaskContext::zero_init(),
             task_status: TaskStatus::UnInit,
+            syscall_times: [0; MAX_SYSCALL_NUM],
         }; MAX_APP_NUM];
         for (i, task) in tasks.iter_mut().enumerate() {
             task.task_cx = TaskContext::goto_restore(init_app_cx(i));
@@ -135,6 +137,33 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+
+    /// Add one to the counter of syscall `syscall_id` of current task.
+    ///
+    /// This is called *before* the syscall is dispatched, so that the count
+    /// returned by `sys_trace(2, id, 0)` includes the `sys_trace` call itself.
+    fn add_syscall_time(&self, syscall_id: usize) {
+        if syscall_id >= MAX_SYSCALL_NUM {
+            return;
+        }
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].syscall_times[syscall_id] += 1;
+    }
+
+    /// Get the count of syscall `syscall_id` invoked by current task.
+    fn get_syscall_time(&self, syscall_id: usize) -> isize {
+        if syscall_id >= MAX_SYSCALL_NUM {
+            return -1;
+        }
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].syscall_times[syscall_id] as isize
+    }
+    /// Get id of the current running task.
+    pub fn current_task(&self) -> usize {
+        self.inner.exclusive_access().current_task
+    }
 }
 
 /// Run the first task in task list.
@@ -156,6 +185,16 @@ fn mark_current_suspended() {
 /// Change the status of current `Running` task into `Exited`.
 fn mark_current_exited() {
     TASK_MANAGER.mark_current_exited();
+}
+
+/// Add one to the counter of syscall `syscall_id` of current task.
+pub fn add_syscall_time(syscall_id: usize) {
+    TASK_MANAGER.add_syscall_time(syscall_id);
+}
+
+/// Get the count of syscall `syscall_id` invoked by current task.
+pub fn get_syscall_time(syscall_id: usize) -> isize {
+    TASK_MANAGER.get_syscall_time(syscall_id)
 }
 
 /// Suspend the current 'Running' task and run the next task in task list.
